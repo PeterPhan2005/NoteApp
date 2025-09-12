@@ -27,7 +27,9 @@ class _AddEditNoteScreenState extends State<AddEditNoteScreen> {
   bool _hasChanges = false;
   bool _isAutoSaveEnabled = true;
   bool _isSaving = false;
-  Note? _currentNote; // Keep track of current note (null for new, Note object for existing)
+  bool _hasEverSaved = false; // Track if we've saved at least once
+  String? _currentNoteId; // Track the actual note ID from Firestore
+  DateTime? _originalCreatedAt; // Keep track of original creation time
   String? _lastSavedName;
   String? _lastSavedContent;
   String? _lastSavedCategoryId;
@@ -46,18 +48,27 @@ class _AddEditNoteScreenState extends State<AddEditNoteScreen> {
   void _initializeData() {
     if (widget.note != null) {
       // Editing existing note
-      _currentNote = widget.note;
+      _hasEverSaved = true;
+      _currentNoteId = widget.note!.id;
+      _originalCreatedAt = widget.note!.createdAt;
       _nameController.text = widget.note!.name;
       _contentController.text = widget.note!.content;
       _selectedCategoryId = widget.note!.categoryId.isEmpty ? null : widget.note!.categoryId;
+      
+      print('Initialize existing note: ID=${widget.note!.id}, name="${widget.note!.name}", content=${widget.note!.content.length} chars');
+      print('Note category ID from DB: "${widget.note!.categoryId}" -> selectedCategoryId: "$_selectedCategoryId"');
       
       // Save initial state
       _lastSavedName = widget.note!.name;
       _lastSavedContent = widget.note!.content;
       _lastSavedCategoryId = widget.note!.categoryId.isEmpty ? null : widget.note!.categoryId;
+      
+      print('Initialized last saved category ID: "$_lastSavedCategoryId"');
     } else {
       // Creating new note
-      _currentNote = null;
+      _hasEverSaved = false;
+      _currentNoteId = null;
+      _originalCreatedAt = null;
     }
   }
 
@@ -106,8 +117,8 @@ class _AddEditNoteScreenState extends State<AddEditNoteScreen> {
   void _scheduleAutoSave() {
     _autoSaveTimer?.cancel();
     
-    // Auto-save after 500ms for more responsive saving
-    _autoSaveTimer = Timer(const Duration(milliseconds: 500), () {
+    // Auto-save after 3 seconds to prevent excessive saves
+    _autoSaveTimer = Timer(const Duration(seconds: 1), () {
       if (_hasChanges && !_isSaving) {
         _performAutoSave();
       }
@@ -120,11 +131,25 @@ class _AddEditNoteScreenState extends State<AddEditNoteScreen> {
     final name = _nameController.text.trim();
     final content = _contentController.text.trim();
 
-    print('AutoSave triggered: name="$name", content="${content.length} chars"');
+    print('AutoSave: name="$name", content="${content.length} chars", category="$_selectedCategoryId"');
+    print('Last saved: name="$_lastSavedName", content="${(_lastSavedContent ?? '').length} chars", category="$_lastSavedCategoryId"');
 
     // Don't save if both name and content are empty
     if (name.isEmpty && content.isEmpty) {
-      print('AutoSave skipped: both name and content are empty');
+      return;
+    }
+
+    // Don't save if content is too short (less than 5 characters) and no title
+    if (name.isEmpty && content.length < 5) {
+      return;
+    }
+
+    // Don't save duplicate - check if content actually changed
+    if (_hasEverSaved && 
+        name == (_lastSavedName ?? '') && 
+        content == (_lastSavedContent ?? '') && 
+        _selectedCategoryId == _lastSavedCategoryId) {
+      print('AutoSave skipped: no changes detected');
       return;
     }
 
@@ -133,9 +158,8 @@ class _AddEditNoteScreenState extends State<AddEditNoteScreen> {
     });
 
     try {
-      if (_currentNote == null) {
-        print('Creating new note...');
-        // Creating new note
+      if (!_hasEverSaved || _currentNoteId == null) {
+        // Creating new note for the first time
         final newNote = Note(
           id: '', // Firestore will generate ID
           name: name.isEmpty ? "Untitled" : name,
@@ -144,83 +168,40 @@ class _AddEditNoteScreenState extends State<AddEditNoteScreen> {
           createdAt: DateTime.now(),
         );
         
-        await _firestoreService.addNote(newNote);
-        print('New note created successfully');
+        final noteId = await _firestoreService.addNoteAndGetId(newNote);
+        print('New note created with ID: $noteId, category: ${_selectedCategoryId}');
         
-        // Create a Note object with the current data for tracking
-        _currentNote = Note(
-          id: 'temp-id', // Temporary ID since we don't get the actual ID back
-          name: name.isEmpty ? "Untitled" : name,
-          content: content,
-          categoryId: _selectedCategoryId ?? '',
-          createdAt: DateTime.now(),
-        );
+        // Save the note ID and creation time for future updates
+        _currentNoteId = noteId;
+        _originalCreatedAt = DateTime.now();
+        _hasEverSaved = true;
         
-        // Update last saved state
-        _lastSavedName = name.isEmpty ? "Untitled" : name;
-        _lastSavedContent = content;
-        _lastSavedCategoryId = _selectedCategoryId;
-        
-        setState(() {
-          _hasChanges = false;
-        });
-        
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('✅ Note created and saved'),
-              backgroundColor: Colors.green,
-              duration: Duration(seconds: 1),
-            ),
-          );
-        }
       } else {
-        print('Updating existing note...');
         // Updating existing note
         final updatedNote = Note(
-          id: _currentNote!.id,
+          id: _currentNoteId!,
           name: name.isEmpty ? "Untitled" : name,
           content: content,
           categoryId: _selectedCategoryId ?? '',
-          createdAt: _currentNote!.createdAt, // Keep original creation time
+          createdAt: _originalCreatedAt ?? DateTime.now(), // Keep original creation time
         );
         
         await _firestoreService.updateNote(updatedNote);
-        print('Note updated successfully');
-        
-        // Update current note reference
-        _currentNote = updatedNote;
-        
-        // Update last saved state
-        _lastSavedName = name.isEmpty ? "Untitled" : name;
-        _lastSavedContent = content;
-        _lastSavedCategoryId = _selectedCategoryId;
-        
-        setState(() {
-          _hasChanges = false;
-        });
-        
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('✅ Note updated'),
-              backgroundColor: Colors.green,
-              duration: Duration(seconds: 1),
-            ),
-          );
-        }
+        print('Note updated with ID: ${_currentNoteId}, category: ${_selectedCategoryId}');
       }
+      
+      // Update last saved state
+      _lastSavedName = name.isEmpty ? "Untitled" : name;
+      _lastSavedContent = content;
+      _lastSavedCategoryId = _selectedCategoryId;
+      
+      setState(() {
+        _hasChanges = false;
+      });
+      
     } catch (e) {
-      print('Auto-save error: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('❌ Save error: $e'),
-            backgroundColor: Colors.red,
-            duration: const Duration(seconds: 2),
-          ),
-        );
-      }
+      // Silent error handling - just print to console for debugging
+      print('Firestore auto-save error: $e');
     } finally {
       setState(() {
         _isSaving = false;
@@ -331,14 +312,37 @@ class _AddEditNoteScreenState extends State<AddEditNoteScreen> {
                     StreamBuilder<List<Category>>(
                       stream: _categoryService.getCategories(),
                       builder: (context, snapshot) {
+                        if (!snapshot.hasData) {
+                          return const Center(child: CircularProgressIndicator());
+                        }
+                        
                         final categories = snapshot.data ?? [];
+                        
+                        // Validate selected category still exists
+                        final validCategoryIds = categories.map((c) => c.id).toSet();
+                        
+                        // If selected category doesn't exist, reset it immediately
+                        String? displayValue = _selectedCategoryId;
+                        if (displayValue != null && !validCategoryIds.contains(displayValue)) {
+                          displayValue = null;
+                          // Schedule reset after frame
+                          WidgetsBinding.instance.addPostFrameCallback((_) {
+                            if (mounted) {
+                              setState(() {
+                                _selectedCategoryId = null;
+                                _lastSavedCategoryId = null;
+                              });
+                            }
+                          });
+                        }
+                        
                         return DropdownButtonFormField<String>(
                           decoration: const InputDecoration(
                             labelText: "Category (optional)",
                             border: OutlineInputBorder(),
                             prefixIcon: Icon(Icons.category),
                           ),
-                          value: _selectedCategoryId,
+                          initialValue: displayValue,
                           items: [
                             const DropdownMenuItem<String>(
                               value: null,

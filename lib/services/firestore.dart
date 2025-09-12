@@ -17,6 +17,16 @@ class FirestoreService {
         .add(note.toMap());
   }
 
+  // Add note and return the document ID
+  Future<String> addNoteAndGetId(Note note) async {
+    final docRef = await _firestore
+        .collection('users')
+        .doc(userId)
+        .collection('notes')
+        .add(note.toMap());
+    return docRef.id;
+  }
+
   // Cập nhật note
   Future<void> updateNote(Note note) {
     return _firestore
