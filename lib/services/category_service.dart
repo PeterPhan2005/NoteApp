@@ -114,7 +114,7 @@ class CategoryService {
       ),
       Category(
         id: '',
-        name: 'Học tập',
+        name: 'Study',
         color: 'orange',
         icon: 'study',
         createdAt: DateTime.now(),
